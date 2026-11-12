@@ -1211,7 +1211,13 @@ class Agent:
         failure = exc
       wait = next(waits, None)
       if wait is None:
-        raise failure
+        # out of short backoffs: keep retrying every 2 minutes; the time
+        # check below stops this once the task clock leaves no room
+        wait = 120
+      # honor the endpoint's own "retry in N s" hint when it is longer
+      hint = re.search(r"retry in ([0-9]+)(?:\.[0-9]+)?s", str(failure), re.I)
+      if hint:
+        wait = max(wait, min(int(hint.group(1)) + 5, 900))
       left = self.session.time_left()
       if left is not None and left - wait < reserve:
         await self.session.log(
