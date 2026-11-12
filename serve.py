@@ -68,7 +68,10 @@ RESPONSES_ONLY = re.compile(
 # (marked()); other models cache on their own.
 CACHE_MARK = "claude" in MODEL.lower()
 COMPACT_AT_TOKENS = int(os.environ.get("COMPACT_AT_TOKENS", "150000"))
-TOOL_RESULT_CHARS = 30_000
+TOOL_RESULT_CHARS = int(os.environ.get("TOOL_RESULT_CHARS", "30000"))
+# seconds to wait before each model call; a shared or small per-minute token
+# quota may need the calls spaced out
+CALL_GAP_SEC = float(os.environ.get("CALL_GAP_SEC", "0"))
 # MCP tools are offered as functions up to this many characters of JSON in all
 DIRECT_MCP_CHARS = 40_000
 # functions one request may offer (OpenAI's limit), the built-in four included
@@ -1191,6 +1194,8 @@ class Agent:
     waits = iter(RETRY_WAITS)
     while True:
       try:
+        if CALL_GAP_SEC:
+          await asyncio.sleep(CALL_GAP_SEC)
         reply = await self.stream(self.messages, tool_choice, reserve, head)
         if reply.finish is None:
           raise StreamCut("the stream ended without a finish reason")
