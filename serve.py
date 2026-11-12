@@ -45,8 +45,17 @@ MODEL = os.environ.get("MODEL_NAME", "")
 # DeepSeek-V4, high for the others (Gemini refuses max). REASONING_EFFORT
 # overrides it.
 MAX_EFFORT_MODELS = ("claude", "glm", "gpt-6", "deepseek-v4")
+# Models with no reasoning control: sending reasoning_effort makes their
+# endpoint answer 400 (Gemma: "Thinking budget is not supported").
+NO_EFFORT_MODELS = ("gemma", "llama")
 EFFORT = os.environ.get("REASONING_EFFORT") or (
-    "max" if any(m in MODEL.lower() for m in MAX_EFFORT_MODELS) else "high"
+    "max"
+    if any(m in MODEL.lower() for m in MAX_EFFORT_MODELS)
+    else (
+        ""
+        if any(m in MODEL.lower() for m in NO_EFFORT_MODELS)
+        else "high"
+    )
 )
 # OpenAI's GPT-6 models only support function tools combined with
 # reasoning_effort on the Responses API. Other models also switch to
@@ -875,7 +884,7 @@ class Agent:
     # max_tokens once an endpoint refuses this one
     self.token_limit = "max_completion_tokens"
     # empty once an endpoint refuses it
-    self.effort = {"reasoning_effort": EFFORT}
+    self.effort = {"reasoning_effort": EFFORT} if EFFORT else {}
     # whether calls go to the Responses API rather than Chat Completions
     self.responses = MODEL.lower().startswith(RESPONSES_MODELS)
     self.finish_margin = FINISH_MARGIN_SEC
@@ -1295,7 +1304,7 @@ class Agent:
     Returns:
       `True` if `reasoning_effort` was being sent and is now dropped.
     """
-    if not self.effort or not re.search(r"reasoning[._]effort", error):
+    if not self.effort or not re.search(r"reasoning[._]effort|thinking", error):
       return False
     self.effort = {}
     return True
