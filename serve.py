@@ -218,8 +218,9 @@ A plan for the task follows the task below. Use it, and correct it where the fil
 
 VERIFIER = """You check an engineer's work on a task in a Linux container. You get the task, the plan, and the \
 engineer's summary of what was delivered. Open every deliverable with your tools (bash starts in {workdir}) and check \
-it against the task: the path, the format, every part the task asks for, and the key numbers, recomputed. Do not \
-create or change any file. If everything holds, reply with the single word PASS and nothing else. Otherwise reply \
+it against the task: the path, the format, every part the task asks for, and the key numbers, recomputed. When \
+a deliverable is runnable (a script, a program), run it end to end exactly the way the task's checker would and \
+report any error. Do not create or change any file. If everything holds, reply with the single word PASS and nothing else. Otherwise reply \
 with a numbered list of the gaps, each specific enough to fix."""
 
 # asked once when a role's share of the task time is spent
