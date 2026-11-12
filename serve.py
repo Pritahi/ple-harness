@@ -1255,6 +1255,13 @@ class Agent:
           continue
         if not (exc.status_code in (408, 409, 429) or exc.status_code >= 500):
           raise
+        if (
+            exc.status_code == 429
+            and self.estimate_prompt_tokens() > self.compact_at()
+        ):
+          # a request bigger than the endpoint's per-call or per-minute cap
+          # can never be waited out: shrink the prompt before retrying
+          await self.compact()
         failure = exc
       except StreamBadRequest as exc:
         if await self.remedy(str(exc)):
@@ -1895,7 +1902,25 @@ class Agent:
       await self.session.log(
           f"context: notes failed ({str(exc)[:200] or 'out of time'})"
       )
-      return bool(cuts)
+      # The summary call can itself be too big for the endpoint (a small
+      # per-minute quota rejects it at any wait). Keeping every turn then
+      # grows the context past the point of no return, where no call fits
+      # at all. Dropping the old turns without notes loses memory but keeps
+      # the agent alive, and alive beats remembered.
+      self.messages = (
+          self.messages[:2]
+          + [{
+              "role": "user",
+              "content": (
+                  "[Earlier turns were removed to save context, before"
+                  " notes could be taken. Re-read whatever you need from"
+                  " the files; your earlier work is still on disk.]"
+              ),
+          }]
+          + self.messages[cut:]
+      )
+      self.prompt_tokens = self.estimate_prompt_tokens()
+      return True
     await self.report(notes)
     if notes.finish is None:
       await self.session.log(
