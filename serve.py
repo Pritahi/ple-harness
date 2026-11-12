@@ -34,6 +34,7 @@ import os
 import posixpath
 import re
 import sys
+import time
 import types
 from typing import Any
 
@@ -72,6 +73,32 @@ TOOL_RESULT_CHARS = int(os.environ.get("TOOL_RESULT_CHARS", "30000"))
 # seconds to wait before each model call; a shared or small per-minute token
 # quota may need the calls spaced out
 CALL_GAP_SEC = float(os.environ.get("CALL_GAP_SEC", "0"))
+MODEL_TPM = int(os.environ.get("MODEL_TPM", "0"))
+
+# Rolling one-minute input-token budget shared by every call this process
+# makes. Free-tier endpoints cap input tokens per minute (the cap counts tool
+# schemas too), and a call that cannot fit the minute dies to a 429 that no
+# retry can fix once the prompt alone exceeds the cap, so pacing beats
+# backing off.
+_TPM_CALLS: list[tuple[float, int]] = []
+
+
+async def pace_tokens(est: int) -> None:
+  """Waits until `est` more input tokens fit the rolling `MODEL_TPM` budget.
+
+  Args:
+    est: Estimated input tokens of the call about to be made.
+  """
+  if not MODEL_TPM:
+    return
+  while True:
+    now = time.monotonic()
+    while _TPM_CALLS and now - _TPM_CALLS[0][0] >= 60:
+      _TPM_CALLS.pop(0)
+    if sum(t for _, t in _TPM_CALLS) + est <= MODEL_TPM or not _TPM_CALLS:
+      _TPM_CALLS.append((now, est))
+      return
+    await asyncio.sleep(_TPM_CALLS[0][0] + 60.5 - now)
 # MCP tools are offered as functions up to this many characters of JSON in all
 DIRECT_MCP_CHARS = 40_000
 # functions one request may offer (OpenAI's limit), the built-in four included
@@ -1457,6 +1484,13 @@ class Agent:
     left = self.session.time_left()
     self.max_output = self.output_limit()
     reply = Reply()
+    await pace_tokens(
+        (
+            len(json.dumps(marked(messages)))
+            + len(json.dumps(self.tools or []))
+        )
+        // 4
+    )
 
     async def read():
       if self.responses:
