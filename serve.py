@@ -175,8 +175,10 @@ How to work:
 - Read the whole task, then look at the files you were given before choosing an approach.
 - Work in small, verified steps. Compute numbers with code rather than by hand, and check units.
 - When the task says how the result is checked (a time limit, a format, a test), check it that way yourself.
-- Write each deliverable exactly where, under the name and in the format the task asks for. Write it early, then \
-improve it.
+- Write each deliverable exactly where, under the name and in the format the task asks for. Your first working \
+session must end with a complete rough version of every deliverable on disk, even an imperfect one; spend the \
+rest of the time improving it. A missing deliverable file scores zero, the worst outcome.
+- Read only what the current step needs; do not try to read or convert every file first.
 - Produce office and binary formats (docx, xlsx, pdf, ...) with code, such as python3 and the libraries in the \
 container, so they are real files of that format.
 - Before you finish, open every deliverable again and check that it is complete and readable.
