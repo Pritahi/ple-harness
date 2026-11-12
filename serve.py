@@ -230,6 +230,9 @@ PLAN_SHARE = float(os.environ.get("PLAN_SHARE", "0.1"))
 # the worker wraps up when this share is left, to keep time for checking and
 # fixing
 CHECK_SHARE = float(os.environ.get("CHECK_SHARE", "0.25"))
+# when the worker gets the one-time "write the deliverable now" reminder, as
+# the share of total task time still remaining
+NUDGE_SHARE = float(os.environ.get("NUDGE_SHARE", "0.5"))
 # a check or a fix round starts only with this long to work before its own
 # wrap-up
 MIN_STEP_SEC = 120
@@ -893,12 +896,15 @@ class Agent:
       with_mcp: bool = True,
       wrap_left: float | None = None,
       record_final: bool = True,
+      nudge_left: float | None = None,
   ):
     self.session = session
     self.system = system
     self.user_text = user_text
     self.with_mcp = with_mcp
     self.wrap_left = wrap_left
+    self.nudge_left = nudge_left
+    self.nudged = False
     self.wrapped = False
     self.record_final = record_final
     self.tools = list(TOOLS if tools is None else tools)
@@ -1052,6 +1058,19 @@ class Agent:
       left = self.session.time_left()
       if left is not None:
         self.messages[-1]["content"] += f"\n[{int(left // 60)} minutes left]"
+      if (
+          not self.nudged
+          and self.nudge_left is not None
+          and left is not None
+          and left < self.nudge_left
+      ):
+        self.nudged = True
+        self.messages[-1]["content"] += (
+            "\n[Reminder: if the deliverable file the task asks for is not"
+            " written yet, stop exploring and write a complete first version"
+            " NOW with your best current work, then keep improving it. A"
+            " missing deliverable scores zero.]"
+        )
       if self.prompt_tokens > self.compact_at():
         await self.compact()
 
@@ -1980,6 +1999,7 @@ async def solve(session: taskbridge.Session) -> str:
       session,
       system=WORKER,
       wrap_left=until(CHECK_SHARE),
+      nudge_left=until(NUDGE_SHARE),
       user_text=f"{task}\n\n## Plan\n{plan}",
   )
   summary = await worker.run()
