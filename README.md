@@ -3,7 +3,7 @@
 An entry for the [PLE Harness Competition](https://ple-bench.com) (Kaggle:
 "Google - Agent Harness on Physical-Engineering's Last Exam").
 
-A planner + worker + verifier agent harness on `google-cloud/gemini-3.8-flash`,
+A planner + worker + verifier agent harness on `google-cloud/gemma-4-26b`,
 built on the competition kit's `custom-openai` sample (streaming, context
 compaction, task MCP tools, retry and context-limit recovery) with the
 three-role loop and time budgeting of its `plan-verify` sample:
