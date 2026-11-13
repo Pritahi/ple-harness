@@ -1,8 +1,12 @@
 name: ple-harness
-model_api: google-cloud/gemini-3.8-flash
+model_api: google-cloud/gemma-4-26b
 install: >-
   uv venv --python 3.12 /opt/harness/venv
   && uv pip install --python /opt/harness/venv/bin/python -r {src}/requirements.txt
 serve: /opt/harness/venv/bin/python {src}/serve.py
 env:
-  COMPACT_AT_TOKENS: "150000"
+  COMPACT_AT_TOKENS: "4000"
+  MODEL_TPM: "15000"
+  CALL_GAP_SEC: "1"
+  NUDGE_SHARE: "0.66"
+  TOOL_RESULT_CHARS: "3000"
