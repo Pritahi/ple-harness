@@ -69,6 +69,7 @@ RESPONSES_ONLY = re.compile(
 # (marked()); other models cache on their own.
 CACHE_MARK = "claude" in MODEL.lower()
 COMPACT_AT_TOKENS = int(os.environ.get("COMPACT_AT_TOKENS", "150000"))
+MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "0"))  # 0 = no cap
 TOOL_RESULT_CHARS = int(os.environ.get("TOOL_RESULT_CHARS", "30000"))
 # seconds to wait before each model call; a shared or small per-minute token
 # quota may need the calls spaced out
@@ -819,7 +820,7 @@ class Reply:
           for c in self.calls.values()
       ]
     if self.reasoning:
-      message["reasoning_content"] = self.reasoning
+      message["reasoning_content"] = self.reasoning[-4000:]
     return drop_thinking(message, unless=signed)
 
 
@@ -1261,7 +1262,9 @@ class Agent:
         ):
           # a request bigger than the endpoint's per-call or per-minute cap
           # can never be waited out: shrink the prompt before retrying
-          await self.compact()
+          if not await self.compact():
+            # nothing cuttable and too few turns for notes: force it
+            self.force_shrink()
         failure = exc
       except StreamBadRequest as exc:
         if await self.remedy(str(exc)):
@@ -1446,12 +1449,11 @@ class Agent:
       `output_ceiling`, clamped down to `room()` when known (never below
       `MIN_OUTPUT`).
     """
+    ceiling = self.output_ceiling
+    if MAX_OUTPUT_TOKENS:
+      ceiling = min(ceiling, MAX_OUTPUT_TOKENS)
     room = self.room()
-    return (
-        self.output_ceiling
-        if room is None
-        else max(MIN_OUTPUT, min(self.output_ceiling, room))
-    )
+    return ceiling if room is None else max(MIN_OUTPUT, min(ceiling, room))
 
   def compact_at(self) -> int:
     """Returns the prompt token threshold at which to trigger compaction.
@@ -1841,6 +1843,64 @@ class Agent:
     )
     return [m for m in self.messages[last:] if m["role"] == "tool"]
 
+  def force_shrink(self) -> None:
+    """Truncates the largest messages when compact() can cut nothing.
+
+    Last resort for a prompt the endpoint rejects at a size no wait can
+    fix (a small per-call or per-minute cap): clips big message contents
+    and tool-call arguments, largest first, until the estimate fits
+    `compact_at()`. Progress is guaranteed, so a 429 retry loop can never
+    spin on an identical payload.
+
+    """
+    # stored reasoning is cheap to lose and dominates some models' turns;
+    # keep only the newest turn's (a tool loop's last block must survive)
+    for n, m in enumerate(self.messages):
+      if n >= 2 and n < len(self.messages) - 1:
+        m.pop("reasoning_content", None)
+        m.pop("reasoning", None)
+    self.prompt_tokens = self.estimate_prompt_tokens()
+    while self.estimate_prompt_tokens() > self.compact_at():
+      sizes = [
+          (
+              len(json.dumps(
+                  {k: v for k, v in m.items() if k != "output_items"}
+              )),
+              n,
+          )
+          for n, m in enumerate(self.messages)
+          if n >= 2
+      ]
+      if not sizes:
+        break
+      size, n = max(sizes)
+      if size < 900:
+        break
+      m = self.messages[n]
+      content = m.get("content")
+      if isinstance(content, str) and len(content) > 800:
+        m["content"] = (
+            content[:400]
+            + "\n[... truncated: the endpoint rejected the prompt size ...]"
+        )
+        continue
+      calls = m.get("tool_calls") or []
+      big_call = next(
+          (
+              c for c in calls
+              if len(c.get("function", {}).get("arguments") or "") > 800
+          ),
+          None,
+      )
+      if big_call is not None:
+        args = big_call["function"]["arguments"]
+        big_call["function"]["arguments"] = (
+            args[:400] + "... [truncated: prompt too big]"
+        )
+        continue
+      break
+    self.prompt_tokens = self.estimate_prompt_tokens()
+
   async def compact(self, force: bool = False) -> bool:
     """Compacts conversation history without modifying unread tool results.
 
@@ -1890,7 +1950,7 @@ class Agent:
     # the notes
     while cut > 3 and self.messages[cut]["role"] == "tool":
       cut -= 1
-    if cut < 10:  # too few turns to be worth a notes call
+    if cut < 6:  # too few turns to be worth a notes call
       return bool(cuts)
     try:
       notes = await self.stream(
