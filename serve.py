@@ -1894,8 +1894,8 @@ class Agent:
       )
       if big_call is not None:
         args = big_call["function"]["arguments"]
-        big_call["function"]["arguments"] = (
-            args[:400] + "... [truncated: prompt too big]"
+        big_call["function"]["arguments"] = json.dumps(
+            {"truncated_arguments_prefix": args[:400]}
         )
         continue
       break
