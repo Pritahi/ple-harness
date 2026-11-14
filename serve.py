@@ -909,6 +909,8 @@ class Agent:
     self.wrap_left = wrap_left
     self.nudge_left = nudge_left
     self.nudged = False
+    self.wrote_file = False
+    self.nudge_count = 0
     self.wrapped = False
     self.record_final = record_final
     self.tools = list(TOOLS if tools is None else tools)
@@ -1046,6 +1048,8 @@ class Agent:
         continue
       nudges, head = 0, ""
       for call, args in zip(reply.calls.values(), arguments):
+        if call["name"] in ("write_file", "edit_file"):
+          self.wrote_file = True
         result = (
             await self.run_tool(call["name"], args)
             if isinstance(args, dict)
@@ -1063,18 +1067,26 @@ class Agent:
       if left is not None:
         self.messages[-1]["content"] += f"\n[{int(left // 60)} minutes left]"
       if (
-          not self.nudged
-          and self.nudge_left is not None
+          self.nudge_left is not None
           and left is not None
           and left < self.nudge_left
+          and not self.wrote_file
       ):
-        self.nudged = True
-        self.messages[-1]["content"] += (
-            "\n[Reminder: if the deliverable file the task asks for is not"
-            " written yet, stop exploring and write a complete first version"
-            " NOW with your best current work, then keep improving it. A"
-            " missing deliverable scores zero.]"
-        )
+        # No file written past the nudge point: repeat an escalating reminder
+        # every few tool results until the agent puts a deliverable on disk.
+        self.nudge_count += 1
+        if self.nudge_count == 1 or self.nudge_count % 6 == 0:
+          urgent = (
+              "" if self.nudge_count < 12 else
+              " This is the " + str(self.nudge_count) + "th reminder;"
+              " your VERY NEXT call must be write_file or edit_file."
+          )
+          self.messages[-1]["content"] += (
+              "\n[Reminder: no deliverable file has been written yet. Stop"
+              " exploring and write a complete first version of the file the"
+              " task asks for NOW with your best current work, then keep"
+              " improving it. A missing deliverable scores zero." + urgent + "]"
+          )
       if self.prompt_tokens > self.compact_at():
         await self.compact()
 
