@@ -237,6 +237,7 @@ CHECK_SHARE = float(os.environ.get("CHECK_SHARE", "0.25"))
 # when the worker gets the one-time "write the deliverable now" reminder, as
 # the share of total task time still remaining
 NUDGE_SHARE = float(os.environ.get("NUDGE_SHARE", "0.5"))
+FORCE_SHARE = float(os.environ.get("FORCE_SHARE", "0.30"))  # last share of time: write-or-nothing gate
 # a task with less time than this skips the planner and verifier: one worker
 # gets the whole budget (short checks would lose the task to role overhead)
 SHORT_TASK_SEC = int(os.environ.get("SHORT_TASK_MIN", "45")) * 60
@@ -904,6 +905,7 @@ class Agent:
       wrap_left: float | None = None,
       record_final: bool = True,
       nudge_left: float | None = None,
+      force_left: float | None = None,
       deliverables: list[str] | None = None,
   ):
     self.session = session
@@ -912,6 +914,8 @@ class Agent:
     self.with_mcp = with_mcp
     self.wrap_left = wrap_left
     self.nudge_left = nudge_left
+    self.force_left = force_left
+    self.force_announced = False
     self.nudged = False
     self.wrote_file = False
     self.wrote_deliverable = False
@@ -1046,6 +1050,7 @@ class Agent:
           if self.missing_deliverable() and self.finish_forced < 2:
             # a finish without the named deliverable scores zero; refuse it
             self.finish_forced += 1
+            await self.session.log("refused finish without deliverable")
             self.messages.append({
                 "role": "user",
                 "content": (
@@ -1070,6 +1075,43 @@ class Agent:
         continue
       nudges, head = 0, ""
       for call, args in zip(reply.calls.values(), arguments):
+        if (
+            self.force_left is not None
+            and left is not None
+            and left < self.force_left
+            and self.deliverables
+            and not self.wrote_deliverable
+            and isinstance(args, dict)
+        ):
+          # write-or-nothing gate: with little time left and no deliverable
+          # on disk, block every call that cannot produce it
+          name = call["name"]
+          blob = json.dumps(args)
+          named = any(
+              d.split("/")[-1] and d.split("/")[-1] in blob
+              for d in self.deliverables
+          )
+          if name not in ("write_file", "edit_file") and not (
+              name in ("bash", "read_file") and named
+          ):
+            if not self.force_announced:
+              self.force_announced = True
+              await self.session.log("force-write gate on")
+            result = (
+                "error: BLOCKED. Only "
+                + str(int(left // 60))
+                + " minutes remain and the deliverable does not exist yet: "
+                + ", ".join(self.deliverables)
+                + ". Stop all other work. Draft the full deliverable NOW"
+                  " from what you have - partial and imperfect beats"
+                  " missing - with write_file, or one bash script that"
+                  " creates that exact file. Every other call is blocked"
+                  " until the file exists."
+            )
+            self.messages.append(
+                {"role": "tool", "tool_call_id": call["id"], "content": result}
+            )
+            continue
         if call["name"] in ("write_file", "edit_file"):
           self.wrote_file = True
           if isinstance(args, dict):
@@ -1108,6 +1150,9 @@ class Agent:
         # every few tool results until the agent puts a deliverable on disk.
         self.nudge_count += 1
         if self.nudge_count == 1 or self.nudge_count % 6 == 0:
+          await self.session.log(
+              f"nudge {self.nudge_count} fired, {int(left // 60)} min left"
+          )
           urgent = (
               "" if self.nudge_count < 12 else
               " This is the " + str(self.nudge_count) + "th reminder;"
@@ -1126,6 +1171,21 @@ class Agent:
           )
       if self.prompt_tokens > self.compact_at():
         await self.compact()
+
+  async def deliverable_on_disk(self) -> bool:
+    """True when any named deliverable exists as a file in the sandbox."""
+    for d in self.deliverables:
+      base = d.split("/")[-1]
+      if not base:
+        continue
+      out = await self.bash(
+          "find /filesystem -name " + json.dumps(base) + " -print -quit"
+          " 2>/dev/null",
+          timeout_sec=60,
+      )
+      if base in out:
+        return True
+    return False
 
   def missing_deliverable(self) -> bool:
     """True when deliverables are named and none was written yet."""
@@ -1766,19 +1826,22 @@ class Agent:
       }.get(name)
       if handler is None:
         return f"error: there is no tool named {name}"
+      out = clip(await handler(**args))
       if (
           name == "bash"
           and self.deliverables
           and not self.wrote_deliverable
       ):
-        # a script that builds a deliverable by name counts as writing it
+        # a script that names a deliverable may have built it: check the disk
         cmd = json.dumps(args)
         if any(
             d.split("/")[-1] and d.split("/")[-1] in cmd
             for d in self.deliverables
         ):
-          self.wrote_deliverable = True
-      return clip(await handler(**args))
+          if await self.deliverable_on_disk():
+            self.wrote_deliverable = True
+            await self.session.log("deliverable on disk after bash")
+      return out
     except taskbridge.TaskError as exc:
       return f"error: {exc}"
     except (
@@ -2178,6 +2241,7 @@ async def solve(session: taskbridge.Session) -> str:
       system=WORKER,
       wrap_left=until(CHECK_SHARE),
       nudge_left=until(NUDGE_SHARE),
+      force_left=until(FORCE_SHARE),
       deliverables=deliverables,
       user_text=f"{task}\n\n## Plan\n{plan}",
   )
