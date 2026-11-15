@@ -21,6 +21,10 @@ serve.FINISH_MARGIN_SEC = 30  # keep the sim clock from tripping the time-up cut
 SANDBOX = "/tmp/ple-harness-dryrun-fs"
 os.makedirs(SANDBOX, exist_ok=True)
 
+# a stale deliverable from a previous run would poison the assertions
+for _f in os.listdir(SANDBOX):
+    os.remove(os.path.join(SANDBOX, _f))
+
 DELIV = "Thelbridge_Verification_Memo_Item051_BlockC.docx"
 TOTAL = 1000.0
 FORCE_LEFT = 300.0  # until(FORCE_SHARE=0.30) on a 1000s budget
