@@ -915,6 +915,7 @@ class Agent:
     self.nudged = False
     self.wrote_file = False
     self.wrote_deliverable = False
+    self.finish_forced = 0  # refused finishes without the deliverable
     self.deliverables = [d.strip() for d in (deliverables or []) if d.strip()]
     self.nudge_count = 0
     self.wrapped = False
@@ -1042,6 +1043,21 @@ class Agent:
           })
           continue
         if visible(reply.text) or nudges >= 2:
+          if self.missing_deliverable() and self.finish_forced < 2:
+            # a finish without the named deliverable scores zero; refuse it
+            self.finish_forced += 1
+            self.messages.append({
+                "role": "user",
+                "content": (
+                    "You have not written "
+                    + ", ".join(self.deliverables)
+                    + ". The task scores zero while that file is missing."
+                      " Write a complete version with your best current"
+                      " work now - imperfect is fine - then answer."
+                ),
+            })
+            nudges = 0
+            continue
           return text or self.session.final_message
         nudges += 1  # only consecutive empty turns end the run
         self.messages.append({
@@ -1083,7 +1099,10 @@ class Agent:
           self.nudge_left is not None
           and left is not None
           and left < self.nudge_left
-          and not (self.wrote_deliverable or (not self.deliverables and self.wrote_file))
+          and (
+              self.missing_deliverable()
+              or (not self.deliverables and not self.wrote_file)
+          )
       ):
         # No deliverable written past the nudge point: repeat an escalating reminder
         # every few tool results until the agent puts a deliverable on disk.
@@ -1107,6 +1126,10 @@ class Agent:
           )
       if self.prompt_tokens > self.compact_at():
         await self.compact()
+
+  def missing_deliverable(self) -> bool:
+    """True when deliverables are named and none was written yet."""
+    return bool(self.deliverables) and not self.wrote_deliverable
 
   async def finish(self, why: str) -> str:
     """Prompts the model for a final summary without tools when time is up.
@@ -1741,11 +1764,21 @@ class Agent:
           "write_file": self.write_file,
           "edit_file": self.edit_file,
       }.get(name)
-      return (
-          clip(await handler(**args))
-          if handler
-          else f"error: there is no tool named {name}"
-      )
+      if handler is None:
+        return f"error: there is no tool named {name}"
+      if (
+          name == "bash"
+          and self.deliverables
+          and not self.wrote_deliverable
+      ):
+        # a script that builds a deliverable by name counts as writing it
+        cmd = json.dumps(args)
+        if any(
+            d.split("/")[-1] and d.split("/")[-1] in cmd
+            for d in self.deliverables
+        ):
+          self.wrote_deliverable = True
+      return clip(await handler(**args))
     except taskbridge.TaskError as exc:
       return f"error: {exc}"
     except (
@@ -2125,7 +2158,21 @@ async def solve(session: taskbridge.Session) -> str:
   deliverables: list[str] = []
   dl = re.search(r"DELIVERABLES:\s*(.+)", plan)
   if dl:
-    deliverables = [d.strip() for d in dl.group(1).split(",")]
+    deliverables = [d.strip() for d in dl.group(1).split(",") if d.strip()]
+  if not deliverables:
+    # the plan came out a stub; the task text itself names the outputs
+    deliverables = [
+        d
+        for d in re.findall(
+            r"[Ss]ave\s+[^.\n]{0,100}?\bas\s+"
+            r"(?:a\s+(?:new\s+)?(?:file\s+)?(?:named\s+)?)?"
+            r"([~/\w.-]+\.\w{2,5})",
+            task,
+        )
+        if not d.startswith("/opt")
+    ]
+    if deliverables:
+      await session.log("deliverables from task text: " + ", ".join(deliverables))
   worker = Agent(
       session,
       system=WORKER,
