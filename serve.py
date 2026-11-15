@@ -237,6 +237,9 @@ CHECK_SHARE = float(os.environ.get("CHECK_SHARE", "0.25"))
 # when the worker gets the one-time "write the deliverable now" reminder, as
 # the share of total task time still remaining
 NUDGE_SHARE = float(os.environ.get("NUDGE_SHARE", "0.5"))
+# a task with less time than this skips the planner and verifier: one worker
+# gets the whole budget (short checks would lose the task to role overhead)
+SHORT_TASK_SEC = int(os.environ.get("SHORT_TASK_MIN", "45")) * 60
 # a check or a fix round starts only with this long to work before its own
 # wrap-up
 MIN_STEP_SEC = 120
@@ -2101,6 +2104,15 @@ async def solve(session: taskbridge.Session) -> str:
     return left is None or wrap_up is None or left - wrap_up >= MIN_STEP_SEC
 
   task = session.instruction
+  if total is not None and total < SHORT_TASK_SEC:
+    # a short task: no planner or verifier rounds, whose fixed cost would eat
+    # the budget; one worker gets the whole time with the deliverable nudge
+    summary = await Agent(
+        session,
+        nudge_left=until(NUDGE_SHARE),
+        user_text=task,
+    ).run()
+    return summary or session.final_message
   plan = await Agent(
       session,
       system=PLANNER,
