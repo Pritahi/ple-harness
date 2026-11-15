@@ -211,7 +211,7 @@ its path and state), the numbers and decisions so far, and what remains to do. B
 PLANNER = """You plan an engineering task that another engineer will carry out in a Linux container with no internet \
 access. Inspect the task's files with your tools (bash starts in {workdir}), but do not create or change any file. \
 Then reply with the plan: each deliverable with its exact path and format, what it must contain, the data and method \
-to use, and how to check it."""
+to use, and how to check it. End the plan with one line: DELIVERABLES: <the exact file paths of the deliverables, comma-separated>."""
 
 WORKER = SYSTEM + """
 
@@ -901,6 +901,7 @@ class Agent:
       wrap_left: float | None = None,
       record_final: bool = True,
       nudge_left: float | None = None,
+      deliverables: list[str] | None = None,
   ):
     self.session = session
     self.system = system
@@ -910,6 +911,8 @@ class Agent:
     self.nudge_left = nudge_left
     self.nudged = False
     self.wrote_file = False
+    self.wrote_deliverable = False
+    self.deliverables = [d.strip() for d in (deliverables or []) if d.strip()]
     self.nudge_count = 0
     self.wrapped = False
     self.record_final = record_final
@@ -1050,6 +1053,13 @@ class Agent:
       for call, args in zip(reply.calls.values(), arguments):
         if call["name"] in ("write_file", "edit_file"):
           self.wrote_file = True
+          if isinstance(args, dict):
+            wpath = str(args.get("path", ""))
+            if any(
+                d and (wpath.endswith(d) or d.split("/")[-1] == wpath.split("/")[-1])
+                for d in self.deliverables
+            ):
+              self.wrote_deliverable = True
         result = (
             await self.run_tool(call["name"], args)
             if isinstance(args, dict)
@@ -1070,9 +1080,9 @@ class Agent:
           self.nudge_left is not None
           and left is not None
           and left < self.nudge_left
-          and not self.wrote_file
+          and not (self.wrote_deliverable or (not self.deliverables and self.wrote_file))
       ):
-        # No file written past the nudge point: repeat an escalating reminder
+        # No deliverable written past the nudge point: repeat an escalating reminder
         # every few tool results until the agent puts a deliverable on disk.
         self.nudge_count += 1
         if self.nudge_count == 1 or self.nudge_count % 6 == 0:
@@ -1081,10 +1091,15 @@ class Agent:
               " This is the " + str(self.nudge_count) + "th reminder;"
               " your VERY NEXT call must be write_file or edit_file."
           )
+          missing = (
+              ", ".join(self.deliverables)
+              if self.deliverables
+              else "the file the task asks for"
+          )
           self.messages[-1]["content"] += (
               "\n[Reminder: no deliverable file has been written yet. Stop"
-              " exploring and write a complete first version of the file the"
-              " task asks for NOW with your best current work, then keep"
+              " exploring and write a complete first version of " + missing +
+              " NOW with your best current work, then keep"
               " improving it. A missing deliverable scores zero." + urgent + "]"
           )
       if self.prompt_tokens > self.compact_at():
@@ -2095,11 +2110,16 @@ async def solve(session: taskbridge.Session) -> str:
       record_final=False,
   ).run()
   await session.log(f"plan: {plan[:1000]}")
+  deliverables: list[str] = []
+  dl = re.search(r"DELIVERABLES:\s*(.+)", plan)
+  if dl:
+    deliverables = [d.strip() for d in dl.group(1).split(",")]
   worker = Agent(
       session,
       system=WORKER,
       wrap_left=until(CHECK_SHARE),
       nudge_left=until(NUDGE_SHARE),
+      deliverables=deliverables,
       user_text=f"{task}\n\n## Plan\n{plan}",
   )
   summary = await worker.run()
