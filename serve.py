@@ -1206,6 +1206,31 @@ class Agent:
     """
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     q = json.dumps(path)
+    magic = {"docx": (2, "PK"), "xlsx": (2, "PK"), "pptx": (2, "PK"),
+             "pdf": (4, "%PDF")}.get(ext)
+    if magic:
+      n, sig = magic
+      head = await self.bash("head -c " + str(n) + " " + q, timeout_sec=60)
+      if sig not in head:
+        return False, f"plain text with a .{ext} name, not a real .{ext}"
+    if ext == "docx":
+      # an empty python-docx container is ~36KB: bytes prove nothing, so
+      # count the words in the document body itself (run22: 4 words, 0/77)
+      out = await self.bash(
+          "python3 -c \"import zipfile,re,sys;"
+          " x=zipfile.ZipFile(sys.argv[1]).read('word/document.xml')"
+          ".decode('utf-8','ignore');"
+          " print(len(re.sub(r'<[^>]+>',' ',x).split()))\" " + q
+          + " 2>/dev/null || echo 0",
+          timeout_sec=60,
+      )
+      try:
+        words = int(out.strip().splitlines()[-1])
+      except (ValueError, IndexError):
+        words = 0
+      if words < 100:
+        return False, f"only {words} words of memo text"
+      return True, ""
     out = await self.bash(
         "stat -c %s " + q + " 2>/dev/null || echo 0", timeout_sec=60
     )
@@ -1215,13 +1240,6 @@ class Agent:
       size = 0
     if size < 2048:
       return False, f"only {size} bytes"
-    magic = {"docx": (2, "PK"), "xlsx": (2, "PK"), "pptx": (2, "PK"),
-             "pdf": (4, "%PDF")}.get(ext)
-    if magic:
-      n, sig = magic
-      head = await self.bash("head -c " + str(n) + " " + q, timeout_sec=60)
-      if sig not in head:
-        return False, f"plain text with a .{ext} name, not a real .{ext}"
     return True, ""
 
   async def valid_deliverable(self) -> bool:

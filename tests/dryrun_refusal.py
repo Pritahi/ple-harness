@@ -90,8 +90,14 @@ async def main():
 
     async def fake_write_file(path, content="", append=False, **kw):
         p = os.path.join(SANDBOX, path.replace("/filesystem/", ""))
-        with open(p, "a" if append else "w") as f:
-            f.write(content)
+        if path.endswith(".docx"):
+            import zipfile
+            with zipfile.ZipFile(p, "w") as z:
+                z.writestr("word/document.xml",
+                           "<w:doc><w:t>" + content + "</w:t></w:doc>")
+        else:
+            with open(p, "a" if append else "w") as f:
+                f.write(content)
         return "ok"
 
     agent.write_file = fake_write_file
@@ -103,7 +109,7 @@ async def main():
     script = [
         make_reply(calls=[("bash", {"command": "python3 fix.py"})]),
         make_reply(text="I cannot extract the data. I give up."),
-        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "PK" + "x" * 3000})]),
+        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "memo " * 150})]),
         make_reply(text="Done: memo written."),
     ]
     turns = {"i": 0}

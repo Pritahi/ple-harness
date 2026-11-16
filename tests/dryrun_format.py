@@ -90,8 +90,15 @@ async def main():
 
     async def fake_write_file(path, content="", append=False, **kw):
         p = os.path.join(SANDBOX, path.replace("/filesystem/", ""))
-        with open(p, "a" if append else "w") as f:
-            f.write(content)
+        if path.endswith(".docx") and content.startswith("ZIP:"):
+            content = content[4:]
+            import zipfile
+            with zipfile.ZipFile(p, "w") as z:
+                z.writestr("word/document.xml",
+                           "<w:doc><w:t>" + content + "</w:t></w:doc>")
+        else:
+            with open(p, "a" if append else "w") as f:
+                f.write(content)
         return "ok"
 
     agent.write_file = fake_write_file
@@ -104,8 +111,10 @@ async def main():
         make_reply(calls=[("bash", {"command": "python3 fix.py"})]),
         # first write: plain text under a .docx name - must be REJECTED
         make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "just text"})]),
-        # second write: valid magic + size - must be accepted
-        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "PK" + "x" * 3000})]),
+        # second write: a real zip with only 4 words - must be REJECTED (run22)
+        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "ZIP:four word memo only"})]),
+        # third write: valid container + real word count - must be accepted
+        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "ZIP:" + "memo " * 150})]),
         make_reply(text="Done: memo written."),
     ]
     turns = {"i": 0}
@@ -137,7 +146,10 @@ async def main():
     print("final:", (result or "")[:120])
 
     rejects = [m for m in agent.messages if m.get("role")=="tool" and "cannot score it" in str(m.get("content",""))]
-    assert len(rejects) == 1, f"expected 1 invalid-note, got {len(rejects)}"
+    assert len(rejects) == 2, f"expected 2 invalid-notes, got {len(rejects)}"
+    reasons = " ".join(str(m.get("content")) for m in rejects)
+    assert "plain text with a .docx name" in reasons, "run19 case missing"
+    assert "only 4 words of memo text" in reasons, "run22 word-floor case missing"
     valid_logs = [l for l in session.logs if l.startswith("deliverable valid")]
     assert len(valid_logs) == 1, f"expected 1 valid-accept log, got {valid_logs}"
     assert len(refusals) == 0, f"no refusal expected once a valid file exists, got {refusals}"
