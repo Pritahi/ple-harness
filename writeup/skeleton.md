@@ -91,3 +91,10 @@
 - Fix 849777d: deliverable validity gate (>=2KB + magic bytes PK/%PDF; invalid writes rejected with rebuild note; finish-refusal now requires a VALID deliverable). dryrun_format.py added.
 - Failure taxonomy now 8 deep: quota death -> no deliverable -> scratch-write loophole -> stub plan -> early quit -> ignored nudges/fix-loop -> invalid format -> placeholder content. Each layer exposed only after the previous one was fixed.
 - Remaining gap is content quality = model capability. Dev-model scores are diagnostics; Stage 2 runs the declared strong model.
+
+## run21/run22 (Nov 16, harness 849777d) - 0.1774 OFFICIAL + word-floor lesson
+- run21 (footing) = 0.1774 (11/62): real engineering content scored (consolidation-settlement derivation +4, tolerance-exceeds finding +2, CONDITIONAL disposition +2, basis/tolerance/author items). Misses are deep-discrepancy judgment (founding-elevation conflict, Round 15 routing, date/LL/PI discrepancies) plus cheap heading-wording items a stronger model gets.
+- run22 (solar) = 0.0/77: a REAL 36KB docx containing 4 words ("Bramwick Commons Solar Memo"). Container bytes proved nothing.
+- Fix b6d6baa: word-floor for .docx (>=100 words in document.xml; size floor skips docx). dryrun_format now covers plain-text (run19), 4-word zip (run22), valid memo.
+- Taxonomy layer 9: hollow-but-valid container. Content quality is now the binding constraint in both directions: gemma either can't extract the data (fix-loop) or pads to pass the gate.
+- Score trajectory: 0,0,0,0,0,0,0,0 -> 0.0435 -> 0.1774 (official, gemma-dev). Threshold for Stage 2 prize eligibility is mean >= 0.138 across hidden tasks with the DECLARED model.
