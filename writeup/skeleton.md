@@ -83,3 +83,11 @@
 - a1d2ec1's bash deliverable heuristic false-positived on `find` commands mentioning the filename - replaced with on-disk verification.
 - Fix ad1627c: force-write gate (last 30% of budget blocks any call that cannot produce the deliverable) + serve-side instrumentation logs. Offline dry-runs (tests/) validate gate/refusal/cap in seconds without quota.
 - Lesson: advisory nudges lose to a model stuck in a fix-loop; late-run behavior needs hard gates, not text. Also: a small model's failure mode is not stopping, it is looping - budget enforcement has to assume the loop never exits on its own.
+
+## run19/run20 (Nov 16, harness ad1627c) - gate works: 0.0 and 0.0435 (FIRST OFFICIAL NON-ZERO)
+- Instrumentation confirmed the full chain fires: nudge 1 at 187 min left, escalating every ~6 tool results, force-write gate on in both runs.
+- run19 (footing): memo file ON DISK at grading but plain text under a .docx name - judge could not open it, 0/62. Format failure, not absence.
+- run20 (engineers-estimate): valid parseable memo, scored 2/46 = 0.0435 (addresses Callaway + correct date). Judge verdict: "placeholder" - existence achieved, content hollow.
+- Fix 849777d: deliverable validity gate (>=2KB + magic bytes PK/%PDF; invalid writes rejected with rebuild note; finish-refusal now requires a VALID deliverable). dryrun_format.py added.
+- Failure taxonomy now 8 deep: quota death -> no deliverable -> scratch-write loophole -> stub plan -> early quit -> ignored nudges/fix-loop -> invalid format -> placeholder content. Each layer exposed only after the previous one was fixed.
+- Remaining gap is content quality = model capability. Dev-model scores are diagnostics; Stage 2 runs the declared strong model.
