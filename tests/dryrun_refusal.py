@@ -103,7 +103,7 @@ async def main():
     script = [
         make_reply(calls=[("bash", {"command": "python3 fix.py"})]),
         make_reply(text="I cannot extract the data. I give up."),
-        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "BEST EFFORT MEMO"})]),
+        make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "PK" + "x" * 3000})]),
         make_reply(text="Done: memo written."),
     ]
     turns = {"i": 0}

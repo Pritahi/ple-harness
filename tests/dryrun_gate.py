@@ -103,7 +103,7 @@ async def main():
     script = []
     for _ in range(20):
         script.append(make_reply(calls=[("bash", {"command": "python3 fix.py"})]))
-    script.append(make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "MEMO DRAFT"})]))
+    script.append(make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "PK" + "x" * 3000})]))
     script.append(make_reply(calls=[("bash", {"command": "python3 polish.py"})]))
     script.append(make_reply(text="Done: memo written."))
     turns = {"i": 0}

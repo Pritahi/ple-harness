@@ -1112,6 +1112,11 @@ class Agent:
                 {"role": "tool", "tool_call_id": call["id"], "content": result}
             )
             continue
+        result = (
+            await self.run_tool(call["name"], args)
+            if isinstance(args, dict)
+            else args
+        )
         if call["name"] in ("write_file", "edit_file"):
           self.wrote_file = True
           if isinstance(args, dict):
@@ -1120,12 +1125,17 @@ class Agent:
                 d and (wpath.endswith(d) or d.split("/")[-1] == wpath.split("/")[-1])
                 for d in self.deliverables
             ):
-              self.wrote_deliverable = True
-        result = (
-            await self.run_tool(call["name"], args)
-            if isinstance(args, dict)
-            else args
-        )
+              ok, why = await self.deliverable_valid(wpath)
+              if ok:
+                self.wrote_deliverable = True
+                await self.session.log("deliverable valid: " + wpath)
+              else:
+                result += (
+                    "\nNOTE: " + wpath + " is " + why + "; the grader"
+                    " cannot score it. Rebuild it as a real file of its"
+                    " type (for .docx use python-docx) with the full"
+                    " content - every figure you found belongs in it."
+                )
         if reply.finish == "length" and isinstance(args, str):
           result += (
               f" Your reply hit the {self.max_output}-token output limit; write"
@@ -1172,8 +1182,8 @@ class Agent:
       if self.prompt_tokens > self.compact_at():
         await self.compact()
 
-  async def deliverable_on_disk(self) -> bool:
-    """True when any named deliverable exists as a file in the sandbox."""
+  async def deliverable_path(self) -> str | None:
+    """The path of a named deliverable in the sandbox, when one exists."""
     for d in self.deliverables:
       base = d.split("/")[-1]
       if not base:
@@ -1183,9 +1193,44 @@ class Agent:
           " 2>/dev/null",
           timeout_sec=60,
       )
-      if base in out:
-        return True
-    return False
+      for line in out.splitlines():
+        if base in line:
+          return line.strip()
+    return None
+
+  async def deliverable_valid(self, path: str) -> tuple[bool, str]:
+    """True when the file is a real instance of its type with real content.
+
+    A grader cannot open plain text saved under a .docx name (run19), and a
+    two-line placeholder scores nothing (run20), so existence is not enough.
+    """
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    q = json.dumps(path)
+    out = await self.bash(
+        "stat -c %s " + q + " 2>/dev/null || echo 0", timeout_sec=60
+    )
+    try:
+      size = int(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+      size = 0
+    if size < 2048:
+      return False, f"only {size} bytes"
+    magic = {"docx": (2, "PK"), "xlsx": (2, "PK"), "pptx": (2, "PK"),
+             "pdf": (4, "%PDF")}.get(ext)
+    if magic:
+      n, sig = magic
+      head = await self.bash("head -c " + str(n) + " " + q, timeout_sec=60)
+      if sig not in head:
+        return False, f"plain text with a .{ext} name, not a real .{ext}"
+    return True, ""
+
+  async def valid_deliverable(self) -> bool:
+    """True when a named deliverable exists AND passes deliverable_valid."""
+    path = await self.deliverable_path()
+    if not path:
+      return False
+    ok, _ = await self.deliverable_valid(path)
+    return ok
 
   def missing_deliverable(self) -> bool:
     """True when deliverables are named and none was written yet."""
@@ -1838,9 +1883,18 @@ class Agent:
             d.split("/")[-1] and d.split("/")[-1] in cmd
             for d in self.deliverables
         ):
-          if await self.deliverable_on_disk():
-            self.wrote_deliverable = True
-            await self.session.log("deliverable on disk after bash")
+          found = await self.deliverable_path()
+          if found:
+            ok, why = await self.deliverable_valid(found)
+            if ok:
+              self.wrote_deliverable = True
+              await self.session.log("deliverable valid after bash: " + found)
+            else:
+              out += (
+                  "\nNOTE: " + found + " is " + why + "; the grader cannot"
+                  " score it. Rebuild it as a real file of its type (for"
+                  " .docx use python-docx) with the full content."
+              )
       return out
     except taskbridge.TaskError as exc:
       return f"error: {exc}"
