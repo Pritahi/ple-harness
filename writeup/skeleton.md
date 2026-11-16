@@ -98,3 +98,9 @@
 - Fix b6d6baa: word-floor for .docx (>=100 words in document.xml; size floor skips docx). dryrun_format now covers plain-text (run19), 4-word zip (run22), valid memo.
 - Taxonomy layer 9: hollow-but-valid container. Content quality is now the binding constraint in both directions: gemma either can't extract the data (fix-loop) or pads to pass the gate.
 - Score trajectory: 0,0,0,0,0,0,0,0 -> 0.0435 -> 0.1774 (official, gemma-dev). Threshold for Stage 2 prize eligibility is mean >= 0.138 across hidden tasks with the DECLARED model.
+
+## run23/run24 (Nov 16, harness b6d6baa) - 0.0 / 0.0435: the gate's catch-22
+- Both runs: gate on, nudge chains firing, but "deliverable valid" never logged. run24's memo existed with [TBD] placeholders (2/46 again); run23's never materialized (0/77).
+- Root cause: in the gate zone bash was allowed only when the command NAMED the deliverable - 'python3 create_memo.py' was blocked, so the agent could not run the very script that builds the file. And the bash disk-check only ran for naming commands, so silently-built files went undetected.
+- Fix 0fbfd64: gate blocks only tools that cannot produce a deliverable; disk re-check after every bash call; nudge cadence every 2nd result in gate zone. dryrun_gate rewritten to cover the unnamed-builder case.
+- Lesson: enforcement mechanisms must be audited against the agent's actual build idioms; a gate that blocks the build path is worse than no gate.
