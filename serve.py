@@ -238,6 +238,121 @@ CHECK_SHARE = float(os.environ.get("CHECK_SHARE", "0.25"))
 # the share of total task time still remaining
 NUDGE_SHARE = float(os.environ.get("NUDGE_SHARE", "0.5"))
 FORCE_SHARE = float(os.environ.get("FORCE_SHARE", "0.30"))  # last share of time: write-or-nothing gate
+# the share of task time left at which the harness stops asking and assembles
+# a draft deliverable from the run's own findings: an agent can ignore every
+# nudge and the gate (bash stays open), and a missing deliverable scores zero
+SALVAGE_SHARE = float(os.environ.get("SALVAGE_SHARE", "0.15"))
+
+# Pure-Python renderer the salvage path uploads to turn Markdown-ish text
+# into a real .docx or .pdf without any package install in the container.
+SALVAGE_RENDER = r'''
+import os, sys, zipfile
+
+src, out = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8", errors="replace").read()
+parent = os.path.dirname(out)
+if parent:
+    os.makedirs(parent, exist_ok=True)
+
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+if out.lower().endswith(".docx"):
+    paras = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        style = ""
+        if s.startswith("#"):
+            s = s.lstrip("#").strip()
+            style = '<w:pStyle w:val="Heading1"/>'
+        paras.append(
+            "<w:p><w:pPr>" + style + "</w:pPr><w:r><w:t"
+            " xml:space='preserve'>" + esc(s) + "</w:t></w:r></w:p>"
+        )
+    doc = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+        'wordprocessingml/2006/main"><w:body>'
+        + "".join(paras) + "</w:body></w:document>"
+    )
+    ct = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'content-types"><Default Extension="rels" ContentType="application/'
+        'vnd.openxmlformats-package.relationships+xml"/><Default'
+        ' Extension="xml" ContentType="application/xml"/><Override'
+        ' PartName="/word/document.xml" ContentType="application/vnd.'
+        'openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/'
+        '2006/relationships"><Relationship Id="rId1" Type="http://schemas.'
+        'openxmlformats.org/officeDocument/2006/relationships/'
+        'officeDocument" Target="word/document.xml"/></Relationships>'
+    )
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", ct)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("word/document.xml", doc)
+else:
+    words = []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("#").strip()
+        while len(line) > 90:
+            cut = line.rfind(" ", 0, 90)
+            words.append(line[:cut > 0 and cut or 90])
+            line = line[cut > 0 and cut or 90:]
+        words.append(line)
+    def pdfesc(s):
+        return s.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+    pages = [words[i:i + 48] for i in range(0, max(len(words), 1), 48)] or [[""]]
+    objs = {}
+    kids = []
+    nxt = 4
+    for pg in pages:
+        stream = "BT /F1 10 Tf 40 790 Td 13 TL\n" + "\n".join(
+            "(" + pdfesc(w) + ") Tj T*" for w in pg
+        ) + "\nET"
+        cid, pid = nxt, nxt + 1
+        nxt += 2
+        objs[cid] = (
+            "<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream)
+        )
+        objs[pid] = (
+            "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R >>"
+            " >> >> /Contents %d 0 R >>" % cid
+        )
+        kids.append(pid)
+    objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
+    objs[2] = (
+        "<< /Type /Pages /Kids [%s] /Count %d >>"
+        % (" ".join("%d 0 R" % k for k in kids), len(kids))
+    )
+    objs[3] = (
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+    )
+    body = "%PDF-1.4\n"
+    offsets = []
+    for i in sorted(objs):
+        offsets.append((i, len(body)))
+        body += "%d 0 obj\n%s\nendobj\n" % (i, objs[i])
+    xref = len(body)
+    total = max(objs) + 1
+    body += "xref\n0 %d\n0000000000 65535 f \n" % total
+    pos = dict(offsets)
+    for i in range(1, total):
+        body += "%010d 00000 n \n" % pos.get(i, 0)
+    body += (
+        "trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF"
+        % (total, xref)
+    )
+    open(out, "w", encoding="latin-1").write(body)
+print("salvage-render-ok", out)
+'''.strip()
 # a task with less time than this skips the planner and verifier: one worker
 # gets the whole budget (short checks would lose the task to role overhead)
 SHORT_TASK_SEC = int(os.environ.get("SHORT_TASK_MIN", "45")) * 60
@@ -906,6 +1021,7 @@ class Agent:
       record_final: bool = True,
       nudge_left: float | None = None,
       force_left: float | None = None,
+      salvage_left: float | None = None,
       deliverables: list[str] | None = None,
   ):
     self.session = session
@@ -915,6 +1031,8 @@ class Agent:
     self.wrap_left = wrap_left
     self.nudge_left = nudge_left
     self.force_left = force_left
+    self.salvage_left = salvage_left
+    self.salvages = 0  # harness-assembled deliverable drafts attempted
     self.force_announced = False
     self.nudged = False
     self.wrote_file = False
@@ -1176,6 +1294,18 @@ class Agent:
               " NOW with your best current work, then keep"
               " improving it. A missing deliverable scores zero." + urgent + "]"
           )
+      if (
+          self.salvage_left is not None
+          and left is not None
+          and left < self.salvage_left
+          and self.missing_deliverable()
+          and not self.salvages
+      ):
+        # the agent can explore until the clock dies without ever writing;
+        # assemble a draft deliverable from its own findings while it can
+        # still improve it
+        self.salvages += 1
+        await self.salvage_deliverable()
       if self.prompt_tokens > self.compact_at():
         await self.compact()
 
@@ -1251,6 +1381,150 @@ class Agent:
     """True when deliverables are named and none was written yet."""
     return bool(self.deliverables) and not self.wrote_deliverable
 
+  def findings_text(self, limit: int = 16000) -> str:
+    """The run's own findings: assistant analyses plus recent tool outputs.
+
+    Args:
+      limit: Maximum characters returned, kept from the end (the recent,
+        most digested findings).
+
+    Returns:
+      The gathered text, never empty while the run produced anything.
+    """
+    parts = []
+    for m in self.messages:
+      if m.get("role") != "assistant":
+        continue
+      content = m.get("content")
+      if isinstance(content, list):
+        text = " ".join(
+            str(p.get("text", "")) for p in content if isinstance(p, dict)
+        )
+      else:
+        text = str(content or "")
+      text = visible(text)
+      if text:
+        parts.append(text)
+    body = "\n\n".join(parts)
+    tools = [
+        str(m.get("content") or "")
+        for m in self.messages
+        if m.get("role") == "tool"
+    ]
+    if len(body) < limit // 2 and tools:
+      body += "\n\nRaw outputs:\n" + "\n\n".join(t[-1500:] for t in tools[-4:])
+    return body[-limit:] or "(no findings recorded)"
+
+  async def salvage_deliverable(self, use_model: bool = True) -> None:
+    """Writes a draft deliverable from the run's findings, for the agent.
+
+    An agent can ignore nudges and the write-or-nothing gate (bash stays
+    open) and finish with nothing on disk, which scores zero. With little
+    time left the harness assembles the named file itself. One model call
+    turns the findings into clean deliverable text when time allows; the
+    raw findings go in as they are otherwise. The agent is told where the
+    draft is so it can improve it in place.
+
+    Args:
+      use_model: Whether to spend one completion on clean prose first.
+    """
+    names = []
+    for d in self.deliverables:
+      name = d.lstrip("/") or ""
+      if name:
+        names.append(name)
+    if not names:
+      return
+    findings = self.findings_text()
+    content = ""
+    if use_model:
+      self.messages.append({
+          "role": "user",
+          "content": (
+              "SALVAGE - time is nearly up and no deliverable file exists."
+              " Based ONLY on the findings below from your own work, write"
+              " the COMPLETE text of " + ", ".join(names) + " now as clean"
+              " Markdown: every determination, quantity and basis you found,"
+              " and the final call. No commentary, just the document."
+              "\n\nFINDINGS:\n" + findings
+          ),
+      })
+      left = self.session.time_left()
+      reserve = None if left is None else max(1.0, left - 300)
+      try:
+        content = visible(
+            (
+                await self.complete(
+                    tool_choice="none", reserve=reserve, head=""
+                )
+            ).text
+        )
+      except Exception as exc:  # salvage must never kill the run
+        await self.session.log(
+            "salvage model call failed: " + type(exc).__name__
+        )
+        content = ""
+      if len(content.split()) < 60:
+        content = ""
+    if not content:
+      content = "# Salvaged findings\n\n" + findings
+    wrote = []
+    for name in names:
+      try:
+        path = await self.render_deliverable(name, content)
+        ok, why = await self.deliverable_valid(path)
+      except Exception as exc:  # salvage must never kill the run
+        await self.session.log(
+            "salvage render failed for " + name + ": " + str(exc)[:120]
+        )
+        continue
+      if ok:
+        wrote.append(path)
+        await self.session.log("salvage deliverable written: " + path)
+      else:
+        await self.session.log(
+            "salvage deliverable invalid: " + path + " (" + why + ")"
+        )
+    if wrote:
+      self.wrote_deliverable = True
+      self.messages.append({
+          "role": "user",
+          "content": (
+              "NOTE: the harness assembled a draft deliverable from your"
+              " findings at " + ", ".join(wrote) + " so the run does not"
+              " score zero. Spend the remaining time checking and improving"
+              " it in place."
+          ),
+      })
+
+  async def render_deliverable(self, name: str, content: str) -> str:
+    """Renders `content` as the deliverable file `name` in the container.
+
+    .docx and .pdf are built by a small pure-Python script (no package
+    installs); anything else is written as plain text.
+
+    Args:
+      name: Deliverable path, absolute or relative to /filesystem.
+      content: Markdown-ish document text.
+
+    Returns:
+      The absolute path written in the container.
+    """
+    path = name if name.startswith("/") else "/filesystem/" + name
+    if not path.lower().endswith((".docx", ".pdf")):
+      await self.write_file(path, content)
+      return path
+    await self.write_file("/tmp/salvage_content.txt", content)
+    await self.write_file("/tmp/salvage_render.py", SALVAGE_RENDER)
+    out = await self.bash(
+        "python3 /tmp/salvage_render.py /tmp/salvage_content.txt "
+        + json.dumps(path),
+        timeout_sec=120,
+    )
+    if "salvage-render-ok" not in out:
+      raise taskbridge.TaskError("render failed: " + out[-200:])
+    return path
+
   async def finish(self, why: str) -> str:
     """Prompts the model for a final summary without tools when time is up.
 
@@ -1260,6 +1534,11 @@ class Agent:
     Returns:
       The final summary text, falling back to `self.session.final_message`.
     """
+    if self.missing_deliverable() and self.salvages < 2:
+      # the clock ran out with no deliverable: one last raw assembly, no
+      # model call, before the summary
+      self.salvages += 1
+      await self.salvage_deliverable(use_model=False)
     self.messages.append({
         "role": "user",
         "content": (
@@ -2308,6 +2587,7 @@ async def solve(session: taskbridge.Session) -> str:
       wrap_left=until(CHECK_SHARE),
       nudge_left=until(NUDGE_SHARE),
       force_left=until(FORCE_SHARE),
+      salvage_left=until(SALVAGE_SHARE),
       deliverables=deliverables,
       user_text=f"{task}\n\n## Plan\n{plan}",
   )
