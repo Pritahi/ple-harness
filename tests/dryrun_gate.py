@@ -85,6 +85,13 @@ async def main():
 
     # local filesystem instead of the task container
     async def fake_bash(command, timeout_sec=120):
+        if "builder.py" in command:
+            import zipfile
+            p = os.path.join(SANDBOX, DELIV)
+            with zipfile.ZipFile(p, "w") as z:
+                z.writestr("word/document.xml",
+                           "<w:doc><w:t>" + "memo " * 150 + "</w:t></w:doc>")
+            return "exit_code=0\nbuilt"
         return local_bash(command)
     agent.bash = fake_bash
 
@@ -109,7 +116,8 @@ async def main():
     script = []
     for _ in range(20):
         script.append(make_reply(calls=[("bash", {"command": "python3 fix.py"})]))
-    script.append(make_reply(calls=[("write_file", {"path": f"/filesystem/{DELIV}", "content": "memo " * 150})]))
+    script.append(make_reply(calls=[("mcp_find", {"query": "calendar"})]))
+    script.append(make_reply(calls=[("bash", {"command": "python3 builder.py"})]))
     script.append(make_reply(calls=[("bash", {"command": "python3 polish.py"})]))
     script.append(make_reply(text="Done: memo written."))
     turns = {"i": 0}
@@ -139,11 +147,13 @@ async def main():
     print("final:", (result or "")[:120])
 
     ok = True
-    # gate must have blocked the scratch calls in the last 300s (turns 7+:
-    # left=300 at turn 7 is not < 300; turns 8,9 blocked until write at 8)
+    # gate blocks tools that cannot produce the deliverable (mcp_find here)
     assert len(blocked) >= 1, "gate never blocked a call"
     assert any("force-write gate on" in l for l in session.logs), "no gate log"
     assert on_disk, "deliverable never landed"
+    # the bash-built deliverable must be detected without being named
+    assert any("deliverable valid after bash" in l for l in session.logs), \
+        "bash-built deliverable not detected: " + str(session.logs)
     # after the write, the gate must lift: polish.py ran after the write
     tail = [m for m in agent.messages if m.get("role") == "tool"][-2:]
     print("tail tool results:", [str(m.get("content"))[:80] for m in tail])

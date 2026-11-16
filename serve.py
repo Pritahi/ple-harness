@@ -1086,14 +1086,7 @@ class Agent:
           # write-or-nothing gate: with little time left and no deliverable
           # on disk, block every call that cannot produce it
           name = call["name"]
-          blob = json.dumps(args)
-          named = any(
-              d.split("/")[-1] and d.split("/")[-1] in blob
-              for d in self.deliverables
-          )
-          if name not in ("write_file", "edit_file") and not (
-              name in ("bash", "read_file") and named
-          ):
+          if name not in ("write_file", "edit_file", "bash", "read_file"):
             if not self.force_announced:
               self.force_announced = True
               await self.session.log("force-write gate on")
@@ -1102,11 +1095,10 @@ class Agent:
                 + str(int(left // 60))
                 + " minutes remain and the deliverable does not exist yet: "
                 + ", ".join(self.deliverables)
-                + ". Stop all other work. Draft the full deliverable NOW"
-                  " from what you have - partial and imperfect beats"
-                  " missing - with write_file, or one bash script that"
-                  " creates that exact file. Every other call is blocked"
-                  " until the file exists."
+                + ". Only write_file, edit_file, bash and read_file are"
+                  " allowed until it exists - use them NOW to build the"
+                  " full deliverable from what you have, partial and"
+                  " imperfect beats missing."
             )
             self.messages.append(
                 {"role": "tool", "tool_call_id": call["id"], "content": result}
@@ -1159,7 +1151,12 @@ class Agent:
         # No deliverable written past the nudge point: repeat an escalating reminder
         # every few tool results until the agent puts a deliverable on disk.
         self.nudge_count += 1
-        if self.nudge_count == 1 or self.nudge_count % 6 == 0:
+        cadence = (
+            2
+            if self.force_left is not None and left < self.force_left
+            else 6
+        )
+        if self.nudge_count == 1 or self.nudge_count % cadence == 0:
           await self.session.log(
               f"nudge {self.nudge_count} fired, {int(left // 60)} min left"
           )
@@ -1895,12 +1892,9 @@ class Agent:
           and self.deliverables
           and not self.wrote_deliverable
       ):
-        # a script that names a deliverable may have built it: check the disk
-        cmd = json.dumps(args)
-        if any(
-            d.split("/")[-1] and d.split("/")[-1] in cmd
-            for d in self.deliverables
-        ):
+        # any script may have built the deliverable (e.g. create_memo.py):
+        # check the disk after every bash call, not only naming ones
+        if True:
           found = await self.deliverable_path()
           if found:
             ok, why = await self.deliverable_valid(found)
