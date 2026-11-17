@@ -4,7 +4,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
-OUT = "/tmp/writeup"
+OUT = "/tmp/writeup-wt/writeup"
 
 # ---------- Figure 1: architecture ----------
 fig, ax = plt.subplots(figsize=(9, 5.2))
@@ -60,6 +60,7 @@ layers = [
     ("invalid format", "text in .docx; magic-byte check"),
     ("hollow container", "4-word valid docx; word floor"),
     ("gate catch-22", "builder blocked; produce-only blocking"),
+    ("explore-forever", "92 ignored nudges; harness salvage"),
 ]
 fig, ax = plt.subplots(figsize=(9, 4.6))
 ys = range(len(layers), 0, -1)
@@ -74,25 +75,34 @@ ax.text(0.5, len(layers) + 0.8, "failure layer", ha="center", fontsize=9, fontwe
 ax.text(1.54, len(layers) + 0.8, "harness response", ha="center", fontsize=9, fontweight="bold", color="#2c7a3f")
 ax.set_xlim(-0.85, 3.6); ax.set_ylim(0.3, len(layers) + 1.3)
 ax.axis("off")
-ax.set_title("Figure 2 - Nine failure layers found by dev runs; each visible only after the previous fix",
+ax.set_title("Figure 2 - Ten failure layers found by dev runs; each visible only after the previous fix",
              fontsize=10, pad=8)
 fig.savefig(f"{OUT}/fig2_taxonomy.png", dpi=170, bbox_inches="tight")
 plt.close(fig)
 
 # ---------- Figure 3: run outcomes ----------
 runs = ["run7", "run8", "run9", "run14", "run15", "run16", "run17", "run18",
-        "run19", "run20", "run21", "run22", "run23", "run24"]
-scores = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0435, 0.1774, 0, 0, 0.0435]
-colors = ["#c33" if s == 0 else "#2c7a3f" for s in scores]
-fig, ax = plt.subplots(figsize=(9, 4.2))
-ax.bar(runs, scores, color=colors)
+        "run19", "run20", "run21", "run22", "run23", "run24", "run25", "run26",
+        "run27", "run28", "run29*", "run31*", "run32*", "run33*"]
+scores = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0435, 0.1774, 0, 0, 0.0435, 0, 0,
+          0, 0.0435, 0, 0.1935, 0, 0.0817]
+colors = []
+for r, s in zip(runs, scores):
+    colors.append(("#2c7a3f" if s > 0 else "#c33") if r.endswith("*") else
+                  ("#7fbf8f" if s > 0 else "#e0a3a3"))
+fig, ax = plt.subplots(figsize=(9.5, 4.2))
+ax.bar(range(len(runs)), scores, color=colors)
+ax.set_xticks(range(len(runs)))
+ax.set_xticklabels([r.replace("*", "\n*") for r in runs], fontsize=7.5)
 ax.axhline(0.138, color="#33507a", ls="--", lw=1.2)
 ax.text(0.2, 0.145, "Stage-2 eligibility line (mean >= 0.138)", fontsize=8, color="#33507a")
 for i, s in enumerate(scores):
     if s > 0:
         ax.text(i, s + 0.006, f"{s:.3f}", ha="center", fontsize=8, fontweight="bold")
+ax.text(len(runs) - 0.5, -0.062, "* = gemini-3.1-flash-lite driver (rest gemma-4-26b)",
+        fontsize=7.5, ha="right", color="#555")
 ax.set_ylabel("official verifier score")
-ax.set_title("Figure 3 - Dev-run scores (gemma-4-26b): plumbing fixes turn zeros into scored content",
+ax.set_title("Figure 3 - Dev-run scores: plumbing fixes turn zeros into scored content; the outline planner lifts the ceiling",
              fontsize=10, pad=8)
 ax.spines[["top", "right"]].set_visible(False)
 fig.savefig(f"{OUT}/fig3_outcomes.png", dpi=170, bbox_inches="tight")

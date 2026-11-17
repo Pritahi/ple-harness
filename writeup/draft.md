@@ -2,55 +2,64 @@
 
 ## Summary
 
-We built a model-agnostic agent harness (planner / worker / verifier) and drove it entirely on free-tier infrastructure: GitHub Actions runners as the sandbox and Google's AI Studio free tier as the model API. The harness's mechanics held up across every dev task we ran; the failures we met were almost all economic (per-request token ceilings, daily request caps, job time ceilings) and behavioral (agents that explore forever and never write the deliverable). We describe the failure taxonomy, the fixes that worked, and why the same harness on the declared Stage 2 model converts directly into rubric points.
+We built a model-agnostic agent harness (planner / worker / verifier) and developed it entirely on free-tier infrastructure: GitHub Actions runners as the sandbox and Google AI Studio free-tier models as drivers. Across 20 dev runs we hit ten distinct failure layers, each invisible until the previous one was fixed, and each fixed by a mechanism that is now part of the harness: quota death, missing deliverables, a scratch-write loophole, stub plans, early quitting, fix-loops, invalid formats, hollow containers, a gate catch-22, and an agent that explores for five hours and simply never writes. The last mechanism - deliverable salvage, where the harness assembles the deliverable itself from the run's own findings - closed the plumbing era: every run since has put a valid deliverable in front of the grader. Scores moved from 0.0 across eight consecutive runs to 0.1774, then 0.1935 once a stronger free driver and a structure-first planner lifted the content ceiling. Every mechanism is model-agnostic; the declared Stage 2 model keeps them all and drops only the free-tier crutches.
 
 ## Harness design
 
-The harness is a single-file Python asyncio service speaking the OpenAI chat API to any endpoint. Three roles run in separate conversations:
+A single-file Python asyncio service speaks the OpenAI chat API to any endpoint. Three roles run in separate conversations:
 
-1. **Planner** (read-only tools): inspects the task and files, writes a plan ending with a `DELIVERABLES:` line naming the exact output files.
-2. **Worker** (bash + file tools): executes the plan with a tool loop that shows the remaining time after every tool result.
-3. **Verifier** (read-only): re-opens every deliverable, recomputes key numbers, runs runnable deliverables end-to-end, and sends a gap list back to the worker for fix rounds.
+1. **Planner** (read-only): inspects the task and files, reads any source document or procedure the deliverable must follow end-to-end, and emits a plan with a REQUIRED OUTLINE (section by section, with the determination each section must produce) and a final `DELIVERABLES:` line naming the exact output files.
+2. **Worker** (bash + file tools): executes the plan; every tool result shows the minutes remaining.
+3. **Verifier** (read-only): re-opens every deliverable, recomputes key numbers, runs runnable deliverables end-to-end, and sends a gap list back for fix rounds.
 
-Resource-guard mechanisms, each added in response to an observed death:
+Resource guards, each added in response to an observed death: TPM pacing (token bucket per model), context compaction with oversized-tool-result truncation, compact-on-429 with backoff, short-task bypass (one worker for tasks under 45 minutes), and a time-margin discipline that guarantees a final summary instead of a mid-call cutoff.
 
-- **TPM pacing**: a token-bucket pacer keeps request rate under the endpoint's per-minute cap; a per-model `MODEL_TPM` env sets it.
-- **Context compaction**: at a configurable token budget the conversation is summarized and earlier turns dropped; oversized tool results are truncated; reasoning text is capped.
-- **429 recovery**: compact-on-429 plus retry with backoff; `num_retries: 0` at the proxy so the harness keeps control of failure handling.
-- **Deliverable-aware escalating nudge**: once a time share passes, every few tool results append a reminder until the planner-named deliverable files exist on disk, escalating in tone.
-- **Short-task bypass**: tasks under 45 minutes skip planner and verifier; one worker gets the whole budget.
-- **Time-margin discipline**: a final-summary margin guarantees the agent answers with a summary instead of being cut off mid-tool-call.
+## Failure analysis: the ten-layer taxonomy
 
-## Failure analysis: a taxonomy
+The dev campaign's real product. Each layer below was the dominant failure only after every layer above it had a shipped fix.
 
-Over 16 dev runs we observed four distinct failure classes, in increasing order of subtlety:
+1. **Quota death.** gemma-4-26b free tier: 16k tokens/minute and a 16k-token per-request ceiling (a 27k request 429s in 251 ms). gemini-3.8-flash free tier: 20 requests/day - an agent loop burns that in 7 calls. Fix: per-model env presets, a second AI Studio project for 2x parallelism, compaction budgets sized to the ceiling.
+2. **No deliverable.** A 5-hour run explored a fire-test task and wrote nothing; the single end-of-run reminder washed out. Fix: an escalating nudge that repeats until the named deliverable exists on disk.
+3. **Scratch-write loophole.** The next run wrote 53 files, none of them the deliverable - any write satisfied the nudge. Fix: nudge tracks the planner-named paths, not any write.
+4. **Stub plan.** The planner named deliverables from the task text's first mention, not the required content. Fix: plan validation against the task's deliverable section.
+5. **Early quit.** The agent declared done mid-task. Fix: finish-refusal - a finish without a valid deliverable is rejected with instructions (capped to avoid infinite loops).
+6. **Fix-loop.** The agent edited the same analysis script for an hour, ignoring nudges. Fix: a force-write gate in the last 30% of time blocks every tool except bash/read/write/edit until the deliverable exists.
+7. **Invalid format.** A ".docx" that was plain text with a renamed extension; the grader's renderer rejected it. Fix: deliverable validity checks - magic bytes for the declared type.
+8. **Hollow container.** A structurally valid docx containing four words. Fix: word-floor validation (>=100 words in document.xml; >=2KB for other types).
+9. **Gate catch-22.** The gate blocked the agent's own build scripts (`python3 create_memo.py` names no deliverable file). A gate that blocks the build path is worse than no gate. Fix: bash/read/write/edit are always allowed; the disk is re-checked for a valid deliverable after every bash call.
+10. **Explore-forever.** With the gate open to bash, the agent burned the entire 285-minute budget on 19 analysis scripts, ignored 92 nudges, and finished with a final message promising a memo that never existed. Fix: **deliverable salvage** - in the last 15% of time, the harness itself assembles the deliverable: one model call turns the run's findings into clean document text (raw findings as fallback), a pure-Python renderer writes a real .docx/.pdf with no container installs, and the agent is told where the draft is so it can improve it. A raw-only retry fires at wrap-up.
 
-**Class 1 - model endpoint economics.** gemma-4-26b free tier has a 16k-token per-request ceiling (verified: a 27k-token request is rejected in 251 ms) and a 16k tokens/min rate; gemini-3.8-flash free tier allows only 20 requests/day. A direct consequence: flash cannot drive an agentic loop at all (our 60-minute flash run burned the daily quota in 7 calls and wedged on 429s), and the free judge cannot grade substantial deliverables because the grader's rubric prompts exceed 16k tokens. Quotas are per GCP project, so a second AI Studio project doubled our parallelism.
+After layer 10, the failure mode changed character. Runs 29-34 (gemini-3.1-flash-lite driver) produced self-authored, structurally valid deliverables in about an hour with no salvage at all - and scored on substance, not mechanics: a professional memo that concluded "screen FAILED" where the correct engineering call was advancement to a study agreement (0.0 despite perfect delivery), a valid cable-sizing zip whose 22 held-out answers were all wrong (0.0), and a fire-test memo that earned format and mid-level points while missing deep domain inferences (0.0817). Plumbing earns the right to be graded; judgment earns the points.
 
-**Class 2 - harness configuration mismatch.** Our first flash run completed exactly 2 model calls in 10 minutes: the gemma-tuned TPM pacer (15k/min) throttled flash's large MCP-catalog prompts to one call per 3+ minutes. Environment presets must travel with the model, not the task.
-
-**Class 3 - infrastructure ceilings.** GitHub-hosted runners kill jobs at 6 hours. Three full agent runs were lost because the 310-minute agent budget plus ~2.5 hours of task-environment setup and filesystem capture exceeded the 355-minute job timeout. Agent budgets must be sized per task class: light tasks fit 285 minutes, app-stack tasks (database-backed MCP servers) fit only ~120.
-
-**Class 4 - agent behavior.** The most instructive failures. A 5-hour run explored a fire-test memo task and wrote zero deliverables: the single end-of-run reminder had washed out. The fix, an escalating reminder repeated until the first file write, moved the failure mode: the next run wrote 53 files, none of them the deliverable, because any write satisfied the nudge. The final form nudges until the planner-named deliverable paths exist. A 120-minute run on the backfeed task then produced a correct-format Word letter and the required OpenProject work package - the harness works.
+Every mechanism change was validated offline before a live dispatch: a scripted-model dry-run suite (five scenarios) simulates a fix-looping agent, an early-quitter, an invalid-format writer, and an explore-forever agent, and asserts the harness countermeasure fires. A mechanism that only ever gets validated by a 285-minute GPU run is a debugging loop measured in days; the dry-runs run in seconds.
 
 ## What the scores say
 
-Dev-set scores on gemma-4-26b remain low: the backfeed letter, self-graded against the task's official 17-item rubric (the free judge cannot read it - Class 1), earns 8/61 (~0.13). Every earned point is mechanical: correct file, correct addressee, correct permit facts, correct responsibilities. Every missed point is engineering judgment: the records contain NFPA 70 code violations that should have blocked the energization date, and gemma at a 4k-token compacted context did not find them. This is the clean separation the harness was built for: mechanics earn the floor, model capability earns the rest. The Stage 2 declaration (google-cloud/claude-opus-5-5, currently the strongest model on the public leaderboard at 0.483 with a comparable harness) keeps every mechanism and drops only the gemma-specific crutches (context budget 150k, no TPM pacing).
+| Run | Task | Driver | Mechanism added | Score |
+|-----|------|--------|-----------------|-------|
+| 7-18 | various | gemma-4-26b | layers 1-8 | 0.0 x8 |
+| 21 | footing-settlement | gemma-4-26b | validity floor | 0.1774 |
+| 28 | engineers-estimate | gemma-4-26b | salvage (auto-written) | 0.0435 |
+| 29 | solar-review | flash-lite | - | 0.0 (valid memo, wrong call) |
+| 31 | footing-settlement | flash-lite | outline planner | 0.1935 |
+| 33 | fire-test-memo | flash-lite | outline planner | 0.0817 |
+
+run21's grade detail shows the pattern precisely: 11/62 points, every earned point mechanical (settlement derivation present, tolerance finding, CONDITIONAL disposition, basis items), every missed point a deep-discrepancy judgment call. The harness earns the floor; the model earns the rest. That is exactly the separation Stage 2 rewards: the declared model runs inside the same enforced discipline with a 150k context budget and no pacing crutches.
 
 ## Cross-model generalizability
 
-The harness speaks one OpenAI-compatible protocol and reads all model-specifics from environment variables; we ran it against gemma-4-26b and gemini-3.8-flash without code changes, and the submission declares claude-opus-5-5 with a different env block only. The two models we could run exhibited the same failure classes with different economics, which is itself the finding: for agentic workloads, quota shape (per-request, per-minute, per-day) matters as much as model quality, and a harness must treat endpoint economics as a first-class input.
+The harness speaks one OpenAI-compatible protocol and reads every model-specific from the environment: model name, TPM, compaction budget, call gap, output ceiling. We ran it unchanged against gemma-4-26b, gemma-4-31b, and gemini-3.1-flash-lite (and attempted gemini-3.8-flash). The findings generalize in two directions. First, quota shape matters as much as model quality for agentic workloads: flash-lite's 1M-token context removed the 16k per-request ceiling that throttled every gemma run, and its free tier sustained agent-loop request rates (verified with a 25-call burst, zero 429s), cutting wall-clock per task from 5 hours to about 1. Second, the failure taxonomy is driver-independent: gemma and flash-lite failed through the same layers in the same order, differing only in economics and speed - which is why mechanisms built against one driver transferred to the other without modification. The submission declares one of the sponsored models for Stage 2; the dev drivers above are free-tier models used only to produce artifacts, as the rules allow, and this section names them explicitly.
 
 ## Efficiency and scaling
 
-The entire development loop ran at zero cost: GitHub Actions public-repo runners (355-minute jobs, artifacts between jobs), two AI Studio free-tier keys (per-project quotas), and the benchmark's own grader for small candidates plus rubric self-grading for large ones. 600+ agent calls/day on one free key. The main scaling costs were the three runs lost to the job ceiling and the judge's inability to read large candidates; both are documented above with their fixes.
+Total development cost: zero. GitHub Actions public-repo runners (355-minute job ceiling - the binding constraint, sized into per-class agent budgets: 285 minutes for light tasks, ~120 for app-stack tasks with 2.5h environment overhead), two AI Studio free-tier projects for 2x parallelism, and the benchmark's own grader for scoring. The CI proxy (litellm) fronts the free keys and lets a declared sponsored alias be retargeted at any dev driver for comparison runs while submission.yaml keeps its sponsored declaration. Judge calls use a retry-hardened alias on the opposite key slot from any live agent. One lesson stands out for anyone scaling free-tier agent development: validate mechanisms offline. The five-scenario dry-run suite caught the gate catch-22 class of bug before it could burn a 5-hour run.
 
 ## What we would do with more time
 
-Run the full 29-task dev set on the declared model ahead of Stage 2; add a mid-run verifier checkpoint at 50% time so wrong-track explorations get caught earlier; and teach the nudge to check deliverable *content* (not just existence) against the rubric's binary items.
+Run the full 29-task dev set on the declared model; teach the verifier to check deliverable content against rubric-style binary items mid-run rather than at the end; and add a second salvage pass that re-derives findings from raw tool outputs when the agent's own summaries are thin.
 
 ## Figures
 
-- Figure 1: harness architecture (planner / worker / verifier, proxy, task container with MCP servers).
-- Figure 2: failure taxonomy timeline across 16 runs (class per failure, fix per class).
-- Figure 3: run outcomes table (task, model, cap, steps, deliverables, official/self-graded score).
+- Figure 1: harness architecture (planner / worker / verifier, CI proxy, task container with MCP servers).
+- Figure 2: the ten-layer failure taxonomy, in the order each layer was exposed and fixed.
+- Figure 3: dev-run scores across the campaign - plumbing fixes turn eight consecutive zeros into scored content; the outline planner and a stronger driver lift the ceiling.
