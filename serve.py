@@ -210,12 +210,18 @@ its path and state), the numbers and decisions so far, and what remains to do. B
 # time runs out.
 PLANNER = """You plan an engineering task that another engineer will carry out in a Linux container with no internet \
 access. Inspect the task's files with your tools (bash starts in {workdir}), but do not create or change any file. \
-Then reply with the plan: each deliverable with its exact path and format, what it must contain, the data and method \
-to use, and how to check it. End the plan with one line: DELIVERABLES: <the exact file paths of the deliverables, comma-separated>."""
+When the task asks for a document that follows, updates or answers an existing one (a memo, letter or report), read \
+that source document and any procedure it cites end to end first: the deliverable must mirror the structure those \
+materials demand. Then reply with the plan: each deliverable with its exact path and format; the REQUIRED OUTLINE \
+of every document deliverable, section by section as the source materials define it (every screen, item or \
+determination the procedure calls for, and the call each one produces under the rules); the data and method to use; \
+and how to check it. End the plan with one line: DELIVERABLES: <the exact file paths of the deliverables, comma-separated>."""
 
 WORKER = SYSTEM + """
 
-A plan for the task follows the task below. Use it, and correct it where the files show it is wrong."""
+A plan for the task follows the task below. Use it, and correct it where the files show it is wrong. Follow the \
+plan's REQUIRED OUTLINE section by section; a document that skips sections the source materials demand fails the \
+task even when its prose reads well."""
 
 VERIFIER = """You check an engineer's work on a task in a Linux container. You get the task, the plan, and the \
 engineer's summary of what was delivered. Open every deliverable with your tools (bash starts in {workdir}) and check \
