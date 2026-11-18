@@ -83,9 +83,10 @@ plt.close(fig)
 # ---------- Figure 3: run outcomes ----------
 runs = ["run7", "run8", "run9", "run14", "run15", "run16", "run17", "run18",
         "run19", "run20", "run21", "run22", "run23", "run24", "run25", "run26",
-        "run27", "run28", "run29*", "run31*", "run32*", "run33*"]
+        "run27", "run28", "run29*", "run31*", "run32*", "run33*", "run34*",
+        "run35*"]
 scores = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0435, 0.1774, 0, 0, 0.0435, 0, 0,
-          0, 0.0435, 0, 0.1935, 0, 0.0817]
+          0, 0.0435, 0, 0.1935, 0, 0.0817, 0.0909, 0.0682]
 colors = []
 for r, s in zip(runs, scores):
     colors.append(("#2c7a3f" if s > 0 else "#c33") if r.endswith("*") else
